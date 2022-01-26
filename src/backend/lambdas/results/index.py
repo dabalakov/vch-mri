@@ -25,6 +25,24 @@ def queryResults(cur, page, states):
     cur.execute(cmd, (tuple(states), offset))
     return cur.fetchall()
 
+def queryLabelledResults(cur, page):
+    cmd = """
+    SELECT req.id, state, error, request, age, height, weight, req.info, created_at, updated_at,
+        ai_rule_candidates, ai_rule_id, ai_priority, ai_contrast, ai_p5_flag, ai_tags,
+        final_priority, final_contrast,
+        labelled_rule_id, labelled_priority, labelled_contrast, labelled_notes, labelled_p5_flag, labelled_tags,
+        ai_rule_cand_ranks
+    FROM data_request as req
+    WHERE (labelled_rule_id is not null)
+		or (labelled_priority is not null and labelled_priority != '')
+		or (labelled_contrast is not null)
+    ORDER BY req.updated_at DESC
+    LIMIT 50 OFFSET %s
+    """
+    offset = (int(page) - 1) * 50
+    cur.execute(cmd, (offset,))
+    return cur.fetchall()	
+
 
 def queryResultsID(cur, id, states):
     cmd = """
@@ -51,6 +69,23 @@ def queryPageCount(cur, states):
     cur.execute(cmd, (tuple(states),))
     return cur.fetchall()[0][0]
 
+
+def queryAllLabelledResultsByDate(cur, start_date, end_date):
+    cmd = """
+    SELECT req.id, state,
+        ai_rule_id, ai_priority, ai_contrast,
+        labelled_rule_id, labelled_priority, labelled_contrast
+    FROM data_request as req
+    WHERE
+(labelled_rule_id is not null)
+or (labelled_priority is not null and labelled_priority != '')
+or (labelled_contrast is not null)
+    AND created_at >= %s
+    AND created_at < %s
+    ORDER BY req.ai_rule_id ASC
+    """
+    cur.execute(cmd, (start_date, end_date))
+    return cur.fetchall()
 
 def queryResultsByDate(cur, start_date, end_date):
     cmd = """
@@ -238,6 +273,132 @@ def parse_statistics(data):
 
     return resp_list
 
+def get_stats(cur, data):
+    logger.info('--get_stats()')
+
+    # Date format: YYYY-MM-DD
+    start_date = ''
+    if 'start_date' in data and data['start_date']:
+        start_date = data["start_date"]
+    else:
+        # raise TypeError("Unknown start_date")
+        start_date = '1970-01-01'   # epoch
+    iso_start_date = datetime.strptime(start_date, '%Y-%m-%d')
+
+    end_date = ''
+    if 'end_date' in data and data['end_date']:
+        end_date = data["end_date"]
+        iso_end_date = datetime.strptime(end_date, '%Y-%m-%d')
+
+        # inclusive dates; add 1 day
+        iso_end_date += timedelta(days=1)
+    else:
+        # raise TypeError("Unknown end_date")
+        iso_end_date = datetime.now()
+
+    # iso_start_date = datetime_handler(start_date)
+    logger.info(iso_start_date)
+    logger.info(iso_end_date)
+
+    results = queryAllLabelledResultsByDate(cur, iso_start_date, iso_end_date)
+    logger.info(results)
+
+    return parse_stats(results)
+
+	
+
+
+def parse_stats(data):
+    logger.info('parse_stats')
+    logger.info(data)
+    resp_list = {}
+
+    stat = {'total': 0, 'failed': 0}
+    resp_list['rule'] = stat
+    resp_list['priority'] = stat.copy()
+    resp_list['contrast'] = stat.copy()
+    resp_list['rules'] = []
+    rules = {}
+
+    total = 0
+
+    for resp_tuple in data:
+        logger.info('resp_tuple')
+        logger.info(resp_tuple)
+        resp = {}
+
+        resp['id'] = resp_tuple[0]
+        resp['state'] = resp_tuple[1]
+        resp['ai_rule_id'] = resp_tuple[2]
+        resp['ai_priority'] = resp_tuple[3]
+        resp['ai_contrast'] = resp_tuple[4]
+        resp['labelled_rule_id'] = resp_tuple[5]
+        resp['labelled_priority'] = resp_tuple[6]
+        resp['labelled_contrast'] = resp_tuple[7]
+
+        logger.info(resp)
+
+        total += 1
+        any_failed = False
+        rule_failed = False
+        pri_failed = False
+        con_failed = False
+
+        ai_rule_id = resp['ai_rule_id']
+        labelled_rule_id = resp['labelled_rule_id']
+        if ai_rule_id is None:
+            continue
+        if resp['labelled_rule_id'] is None or resp['labelled_rule_id'] != ai_rule_id:
+            logger.info('ai_rule_id does not match')
+            resp_list['rule']['failed'] += 1
+            any_failed = True
+            rule_failed = True
+        if resp['labelled_priority'] is None or resp['labelled_priority'] != resp['ai_priority']:
+            logger.info('ai_priority does not match')
+            resp_list['priority']['failed'] += 1
+            any_failed = True
+            pri_failed = True
+        if resp['labelled_contrast'] is None or resp['labelled_contrast'] != resp['ai_contrast']:
+            logger.info('ai_contrast does not match')
+            resp_list['contrast']['failed'] += 1
+            any_failed = True
+            con_failed = True          
+
+        try:
+            rule_tuple = rules[str(labelled_rule_id)]
+        except KeyError as error:
+            rules[str(labelled_rule_id)] = {
+                'rule_id': labelled_rule_id,
+                'total': 0,
+                'total_failed': 0,
+                'failed_rule': 0,
+                'failed_pri': 0,
+                'failed_con': 0
+            }
+            rule_tuple = rules[str(labelled_rule_id)]
+
+        rule_tuple['total'] += 1
+        if any_failed:
+            rule_tuple['total_failed'] += 1
+        if rule_failed:
+            rule_tuple['failed_rule'] += 1
+        if pri_failed:
+            rule_tuple['failed_pri'] += 1
+        if con_failed:
+            rule_tuple['failed_con'] += 1
+
+    logger.info('rules')
+    logger.info(rules)
+
+    for rule_tuple in rules:
+        logger.info(rules[rule_tuple])
+        resp_list['rules'].append(rules[rule_tuple])
+
+    resp_list['rule']['total'] = total
+    resp_list['priority']['total'] = total
+    resp_list['contrast']['total'] = total
+
+    return resp_list
 
 def getResultCount(cur, interval):
     if interval == 'DAILY':
@@ -638,6 +799,49 @@ def handler(event, context):
                     # logger.info('resp history')
                     # logger.info(resp['history'])
                     resp['ai_rule_candidates'] = query_parse_resp_rule_candidates(cur, resp['rule_candidates_array'],
+                                                                                    resp['rule_candidates_array_ranks'])
+            elif rest_cmd == 'GET_LABELLED':
+
+                logger.info('------- REST: GET Labelled by page')
+                
+                states = ['received', 'received_duplicate', 'deleted', 'ai_priority_processed',
+                         'final_priority_received', 'labelled_priority']
+                if 'states' in data and data['states'] is not None:
+                    states = data['states']
+                logger.info(states)
+                
+                page = data['page']
+                response2 = parseResponse(queryLabelledResults(cur, page))
+                logger.info("A")
+                # logger.info('parseResponse')
+                # logger.info(response)
+
+                total_pgs = int(queryPageCount(cur,states))
+                logger.info("B")
+                logger.info(f'Pagination - active: {page}, total_pgs: {total_pgs}')
+                if page >= total_pgs:
+                    response2 = parseResponse(queryLabelledResults(cur, total_pgs))
+                resp_dict['total_pgs'] = total_pgs
+
+                for resp in response2:
+                    # logger.info('resp')
+                    # logger.info(resp)
+                    resp['history'] = parseResponseHistory(queryRequestHistory(cur, resp['id']))
+                    # logger.info(resp['history'])
+                    # cio_id = resp['id']
+                    # command = insert_new_request_cmd % cio_id
+                    # logger.info(command)
+                    # cur.execute(command)
+                    #
+                    # # cur.execute(insert_new_request_cmd, cio_id)
+                    # history = cur.fetchall()
+                    # logger.info('history')
+                    # logger.info(history)
+                    # # history = queryRequestHistory(cur, cio_id)
+                    # resp['history'] = json.dumps(history, default=datetime_handler)
+                    # logger.info('resp history')
+                    # logger.info(resp['history'])
+                    resp['ai_rule_candidates'] = query_parse_resp_rule_candidates(cur, resp['rule_candidates_array'],
                                                                                   resp['rule_candidates_array_ranks'])
 
             elif rest_cmd == 'UPDATE_FINAL':
@@ -652,6 +856,9 @@ def handler(event, context):
 
             elif rest_cmd == 'GET_STATISTICS':
                 response = get_statistics(cur, data)
+
+            elif rest_cmd == 'GET_STATS':
+                response = get_stats(cur, data)
 
             elif rest_cmd == 'GET_DATA':
                 daily = getResultCount(cur, 'DAILY')

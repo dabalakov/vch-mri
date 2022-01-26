@@ -13,6 +13,8 @@ import SynonymsPage from "./SynonymsPage/SynonymsPage";
 import SpecialtyExamPage from "./SpecialtyExamPage/SpecialtyExamPage";
 import StatisticsPage from "./StatisticsPage/StatisticsPage";
 import RerunAIPage from "./RerunAIPage/RerunAIPage";
+import ReviewPage from "./ReviewPage/ReviewPage";
+import StatsPage from "./Stats/StatsPage";
 
 class Main extends React.Component {
   render() {
@@ -25,6 +27,8 @@ class Main extends React.Component {
         <Route path="/dashboard/statistics" component={StatisticsPage} />
         <Route path="/dashboard/rerunstatus" component={RerunAIPage} />
         <Route path="/dashboard/results" component={ResultsPage} />
+		<Route path="/dashboard/review" component={ReviewPage} />
+		<Route path="/dashboard/stats" component={StatsPage} />
         <Route path="/dashboard/rules" component={RulesPage} />
         <Route path="/dashboard/spellcheck" component={SpellcheckerPage} />
         <Route path="/dashboard/weights" component={WeightsPage} />
